@@ -48,6 +48,8 @@ function initApp() {
 
   async function checkBarcode(value) {
     value = value.trim();
+    // Strip Code 128 trailer characters: ]C1, ]C0, ]E0, ]Q0 etc.
+    value = value.replace(/\]C[0-9]$/, '').replace(/\]E[0-9]$/, '').replace(/\]Q[0-9]$/, '').trim();
     if (!value) return;
     input.value = value;
 

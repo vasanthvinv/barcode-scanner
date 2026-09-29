@@ -635,23 +635,19 @@ func (a *App) clearScans(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var msg string
 	if category == "" {
-		// Clear all
 		_, err = a.db.Exec(`DELETE FROM scans`)
 		msg = "All scan marks cleared"
 	} else {
-		// Clear only items whose name starts with the category prefix (A/K/S)
+		// Item names are like "Disc Dhol Dandiya - S001", "Disc Dhol Dandiya - A001"
+		// Match: name contains " - S" / " - A" / " - K"
 		_, err = a.db.Exec(`
 			DELETE FROM scans WHERE item_id IN (
 				SELECT id FROM items WHERE name LIKE ?
-			)`, category+"%-%")
-		if err != nil {
-			// fallback: match by barcode prefix patterns per category
-			_, err = a.db.Exec(`DELETE FROM scans WHERE item_id IN (SELECT id FROM items WHERE UPPER(SUBSTR(name, LENGTH(name)-3, 1)) = ?)`, category)
-		}
+			)`, "% - "+category+"%")
 		msg = "Scan marks cleared for category: " + category
 	}
 	if err != nil {
-		adminError(w, r, "Could not clear scan marks")
+		adminError(w, r, "Could not clear scan marks: "+err.Error())
 		return
 	}
 	adminMessage(w, r, msg)

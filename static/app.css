@@ -85,33 +85,44 @@ button.secondary { background: #fff; color: #111; }
 .stat b { font-size: 1.7rem; line-height: 1; }
 .stat span { color: #666; font-size: .85rem; }
 
-/* ── Tabs ─────────────────────────────────────────────── */
-.tabs {
+/* ── Tabs — CSS-only radio approach ───────────────────── */
+.tab-radio { display: none; }
+
+.tab-wrap .tabs {
   display: flex;
   gap: .5rem;
   margin-bottom: 1rem;
   border-bottom: 2px solid #e0e0e0;
-  padding-bottom: 0;
 }
-.tab-btn {
+
+.tab-wrap .tab-btn {
   background: none;
   border: none;
+  border-bottom: 3px solid transparent;
   color: #666;
   font-size: 1rem;
   font-weight: 600;
   padding: .65rem 1.25rem;
-  border-bottom: 3px solid transparent;
   margin-bottom: -2px;
+  cursor: pointer;
   border-radius: 0;
+  display: inline-block;
 }
-.tab-btn.active {
+.tab-wrap .tab-btn:hover { color: #111; background: none; }
+
+/* Show active tab label when radio checked */
+#tab-items-radio:checked ~ .tabs label[for="tab-items-radio"],
+#tab-users-radio:checked ~ .tabs label[for="tab-users-radio"] {
   color: #111;
   border-bottom-color: #111;
-  background: none;
 }
-.tab-btn:hover { color: #111; background: none; }
-.tab-panel { display: block; }
-.hidden { display: none !important; }
+
+/* Hide all tab panels by default */
+.tab-wrap .tab-panel { display: none; }
+
+/* Show correct panel when radio checked */
+#tab-items-radio:checked ~ #tab-items { display: block; }
+#tab-users-radio:checked ~ #tab-users { display: block; }
 /* ── Filter row ───────────────────────────────────────── */
 .list-header {
   display: flex;
