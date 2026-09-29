@@ -1,44 +1,46 @@
-// Load ZXing from local static file (no internet required).
-(function loadZxing() {
+// Uses html5-qrcode library (local, no internet needed)
+// Docs: https://github.com/mebjas/html5-qrcode
+
+(function loadLib() {
   const s = document.createElement('script');
-  s.src = '/static/zxing.min.js';
-  s.onload = initApp;
+  s.src = '/static/html5-qrcode.min.js';
+  s.onload  = initApp;
   s.onerror = () => {
     document.getElementById('cameraHelp').textContent =
-      'Could not load barcode library. Please reload the page.';
+      'Could not load barcode library. Please reload.';
     initApp();
   };
   document.head.appendChild(s);
 })();
 
 function initApp() {
-  const root      = document.querySelector('.scancontainer');
-  const csrf      = root.dataset.csrf;
-  const video     = document.getElementById('video');
-  const input     = document.getElementById('barcodeInput');
-  const startBtn  = document.getElementById('startCamera');
-  const stopBtn   = document.getElementById('stopCamera');
-  const submit    = document.getElementById('submitBarcode');
-  const help      = document.getElementById('cameraHelp');
-  const scanLine  = document.getElementById('scanLine');
-  const videoHint = document.getElementById('videoHint');
+  const root       = document.querySelector('.scancontainer');
+  const csrf       = root.dataset.csrf;
+  const input      = document.getElementById('barcodeInput');
+  const startBtn   = document.getElementById('startCamera');
+  const stopBtn    = document.getElementById('stopCamera');
+  const submit     = document.getElementById('submitBarcode');
+  const help       = document.getElementById('cameraHelp');
+  const scanLine   = document.getElementById('scanLine');
+  const videoHint  = document.getElementById('videoHint');
   const todayCount = document.getElementById('todayCount');
 
-  let reader    = null;
-  let lastValue = '';
-  let lastAt    = 0;
-  let todayScans = 0;
+  let scanner     = null;
+  let scanning    = false;
+  let lastValue   = '';
+  let lastAt      = 0;
+  let todayScans  = 0;
 
-  // ── Result display ─────────────────────────────────────
+  // ── Result display ──────────────────────────────────────
 
   function showResult(kind, icon, title, item, msg) {
     const card = document.getElementById('result');
     card.className = 'result-card ' + kind;
-    card.classList.remove('hidden');
+    card.style.display = 'block';
     document.getElementById('resultIcon').textContent  = icon;
     document.getElementById('resultTitle').textContent = title;
-    document.getElementById('resultItem').textContent  = item  || '';
-    document.getElementById('resultMsg').textContent   = msg   || '';
+    document.getElementById('resultItem').textContent  = item || '';
+    document.getElementById('resultMsg').textContent   = msg  || '';
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
@@ -48,6 +50,13 @@ function initApp() {
     value = value.trim();
     if (!value) return;
     input.value = value;
+
+    // Debounce: same barcode within 2.5s → skip
+    const now = Date.now();
+    if (value === lastValue && now - lastAt < 2500) return;
+    lastValue = value;
+    lastAt    = now;
+
     showResult('pending', '⏳', 'Checking…', value, '');
     try {
       const res  = await fetch('/api/scan', {
@@ -78,69 +87,81 @@ function initApp() {
 
   // ── Manual entry ────────────────────────────────────────
 
-  submit.addEventListener('click', () => checkBarcode(input.value));
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') checkBarcode(input.value); });
+  submit.addEventListener('click', () => {
+    lastValue = ''; // reset debounce for manual entry
+    checkBarcode(input.value);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { lastValue = ''; checkBarcode(input.value); }
+  });
 
-  // ── Camera (ZXing) ──────────────────────────────────────
+  // ── Camera start ────────────────────────────────────────
 
   startBtn.addEventListener('click', async () => {
-    const ZXing = window.ZXingBrowser;
-    if (!ZXing || !ZXing.BrowserMultiFormatReader) {
-      help.textContent = 'Barcode library not loaded. Manual entry still works.';
-      return;
-    }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      help.textContent = 'Camera not available. Use manual entry.';
+    if (!window.Html5Qrcode) {
+      help.textContent = 'Barcode library not loaded. Use manual entry.';
       return;
     }
 
     try {
-      reader = new ZXing.BrowserMultiFormatReader();
+      // Get cameras
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || devices.length === 0) {
+        help.textContent = 'No camera found. Use manual entry.';
+        return;
+      }
 
-      const devices = await navigator.mediaDevices.enumerateDevices()
-        .then(d => d.filter(d => d.kind === 'videoinput'));
-      const backCam  = devices.find(c => /back|rear|environment/i.test(c.label));
-      const deviceId = backCam ? backCam.deviceId : (devices[0] ? devices[0].deviceId : undefined);
+      // Prefer back/environment camera
+      const backCam = devices.find(d =>
+        /back|rear|environment/i.test(d.label)
+      );
+      const camId = backCam ? backCam.id : devices[0].id;
 
-      help.textContent = '';
-      videoHint.textContent = 'Align barcode within the frame';
+      scanner = new Html5Qrcode('video');
+      scanning = true;
       startBtn.disabled = true;
       stopBtn.disabled  = false;
-      scanLine.classList.add('active');
+      help.textContent  = '';
+      if (videoHint) videoHint.textContent = 'Align barcode within the frame';
+      if (scanLine) scanLine.classList.add('active');
 
-      await reader.decodeFromVideoDevice(deviceId, video, (res, err) => {
-        if (!res) return;
-        const value = res.getText();
-        const now   = Date.now();
-        if (value && (value !== lastValue || now - lastAt > 2500)) {
-          lastValue = value;
-          lastAt    = now;
-          checkBarcode(value);
+      await scanner.start(
+        camId,
+        {
+          fps: 15,
+          qrbox: { width: 280, height: 160 },  // wider for barcodes
+          aspectRatio: 1.333,
+          disableFlip: false,
+        },
+        (decodedText) => {
+          checkBarcode(decodedText);
+        },
+        (_errorMsg) => {
+          // scan attempt errors — ignore, keep scanning
         }
-      });
+      );
 
     } catch (e) {
-      help.textContent = 'Could not start camera: ' + (e.message || e);
+      help.textContent  = 'Could not start camera: ' + (e.message || String(e));
       startBtn.disabled = false;
       stopBtn.disabled  = true;
-      scanLine.classList.remove('active');
+      if (scanLine) scanLine.classList.remove('active');
     }
   });
 
+  // ── Camera stop ─────────────────────────────────────────
+
   stopBtn.addEventListener('click', stopCamera);
 
-  function stopCamera() {
-    if (reader) {
-      try { reader.reset(); } catch(_) {}
-      reader = null;
+  async function stopCamera() {
+    if (scanner && scanning) {
+      try { await scanner.stop(); } catch(_) {}
+      try { scanner.clear(); }     catch(_) {}
+      scanner  = null;
+      scanning = false;
     }
-    if (video.srcObject) {
-      video.srcObject.getTracks().forEach(t => t.stop());
-      video.srcObject = null;
-    }
-    video.load();
-    scanLine.classList.remove('active');
-    videoHint.textContent = 'Point barcode at the frame';
+    if (scanLine) scanLine.classList.remove('active');
+    if (videoHint) videoHint.textContent = 'Point barcode at the frame';
     startBtn.disabled = false;
     stopBtn.disabled  = true;
   }
