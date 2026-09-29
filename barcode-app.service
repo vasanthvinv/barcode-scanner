@@ -1,0 +1,22 @@
+[Unit]
+Description=Barcode Check Go App
+After=network.target
+
+[Service]
+Type=simple
+User=barcodeapp
+Group=barcodeapp
+WorkingDirectory=/opt/barcode-app
+Environment=APP_ADDR=127.0.0.1:8080
+Environment=APP_DB=/opt/barcode-app/data/inventory.db
+ExecStart=/opt/barcode-app/barcode-app
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/barcode-app/data
+
+[Install]
+WantedBy=multi-user.target

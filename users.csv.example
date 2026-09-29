@@ -1,0 +1,3 @@
+name,login,password,role
+Administrator,admin,ChangeMe123!,admin
+Warehouse User,user1,ChangeMe123!,user

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admin</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <div><strong>Barcode Check</strong><span class="muted"> — {{.User.Name}} (admin)</span></div>
+  <nav>
+    <a href="/scan">Scan</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+      <button class="linkbtn">Logout</button>
+    </form>
+  </nav>
+</header>
+
+<main class="container">
+  {{if .Message}}<div class="alert success">{{.Message}}</div>{{end}}
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+
+  <!-- Stats bar -->
+  <section class="stats">
+    <div class="stat"><b>{{.ItemCount}}</b><span>Total Items</span></div>
+    <div class="stat"><b>{{.ScanCount}}</b><span>Scanned</span></div>
+    <div class="stat"><b id="statAdult">—</b><span>Adult</span></div>
+    <div class="stat"><b id="statKid">—</b><span>Kid</span></div>
+    <div class="stat"><b id="statSponsor">—</b><span>Sponsor</span></div>
+  </section>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button type="button" class="tab-btn active" data-tab="items">📦 Item List</button>
+    <button type="button" class="tab-btn" data-tab="users">👥 Users</button>
+  </div>
+
+  <!-- ─── ITEMS TAB ──────────────────────────────────────── -->
+  <div id="tab-items" class="tab-panel">
+
+    <!-- Upload -->
+    <section class="card">
+      <h2>Upload Item CSV</h2>
+      <p class="muted small">CSV must have <code>barcode</code> and <code>name</code> columns. Uploading replaces the current list and resets all scan marks.</p>
+      <form method="post" action="/admin/items/upload" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+        <div class="upload-row">
+          <input type="file" name="items_csv" accept=".csv,text/csv" required>
+          <button type="submit">Upload / Replace CSV</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Item list with filter -->
+    <section class="card">
+      <div class="list-header">
+        <h2 style="margin:0">Items</h2>
+        <div class="filter-row">
+          <label class="filter-label">Filter:</label>
+          <button type="button" class="filter-btn active" data-filter="all">All</button>
+          <button type="button" class="filter-btn" data-filter="adult">Adult (A)</button>
+          <button type="button" class="filter-btn" data-filter="kid">Kid (K)</button>
+          <button type="button" class="filter-btn" data-filter="sponsor">Sponsor (S)</button>
+        </div>
+      </div>
+
+      <!-- Per-category clear -->
+      <div class="clear-row">
+        <span class="muted small">Clear scan marks:</span>
+        <form method="post" action="/admin/items/clear-scans" class="inline">
+          <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+          <input type="hidden" name="category" value="">
+          <button class="danger-outline small-btn" onclick="return confirm('Clear ALL scan marks?')">All</button>
+        </form>
+        <form method="post" action="/admin/items/clear-scans" class="inline">
+          <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+          <input type="hidden" name="category" value="A">
+          <button class="danger-outline small-btn" onclick="return confirm('Clear Adult scan marks?')">Adult</button>
+        </form>
+        <form method="post" action="/admin/items/clear-scans" class="inline">
+          <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+          <input type="hidden" name="category" value="K">
+          <button class="danger-outline small-btn" onclick="return confirm('Clear Kid scan marks?')">Kid</button>
+        </form>
+        <form method="post" action="/admin/items/clear-scans" class="inline">
+          <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+          <input type="hidden" name="category" value="S">
+          <button class="danger-outline small-btn" onclick="return confirm('Clear Sponsor scan marks?')">Sponsor</button>
+        </form>
+      </div>
+
+      <div class="tablewrap">
+        <table id="itemTable">
+          <thead>
+            <tr>
+              <th>Barcode</th>
+              <th>Name</th>
+              <th>Category</th>
+              <th>Status</th>
+              <th>Scanned By</th>
+              <th>Scanned At</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Items}}
+            <tr data-cat="{{.Category}}" data-scanned="{{.ScannedBy}}">
+              <td><code>{{.Barcode}}</code></td>
+              <td>{{.Name}}</td>
+              <td><span class="badge badge-{{.CategoryLower}}">{{.Category}}</span></td>
+              <td>
+                {{if .ScannedBy}}
+                  <span class="badge badge-scanned">✓ Scanned</span>
+                {{else}}
+                  <span class="badge badge-pending">Pending</span>
+                {{end}}
+              </td>
+              <td>{{.ScannedBy}}</td>
+              <td>{{.ScannedAt}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- ─── USERS TAB ──────────────────────────────────────── -->
+  <div id="tab-users" class="tab-panel hidden">
+
+    <!-- Add user -->
+    <section class="card">
+      <h2>Add User</h2>
+      <form method="post" action="/admin/users/add" class="grid">
+        <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+        <label>Name<input name="name" required placeholder="Full name"></label>
+        <label>Login<input name="login" required placeholder="Username"></label>
+        <label>Password<input name="password" type="password" minlength="8" required placeholder="Min 8 characters"></label>
+        <label>Role
+          <select name="role">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <div><button type="submit">Add user</button></div>
+      </form>
+    </section>
+
+    <!-- Users list with filter -->
+    <section class="card">
+      <div class="list-header">
+        <h2 style="margin:0">Users</h2>
+        <div class="filter-row">
+          <label class="filter-label">Filter:</label>
+          <button type="button" class="filter-btn active" data-userfilter="all">All</button>
+          <button type="button" class="filter-btn" data-userfilter="admin">Admin</button>
+          <button type="button" class="filter-btn" data-userfilter="user">User</button>
+        </div>
+      </div>
+      <div class="tablewrap">
+        <table id="userTable">
+          <thead>
+            <tr><th>Name</th><th>Login</th><th>Role</th><th></th></tr>
+          </thead>
+          <tbody>
+            {{range .Users}}
+            <tr data-role="{{.Role}}">
+              <td>{{.Name}}</td>
+              <td>{{.Login}}</td>
+              <td><span class="badge badge-{{.Role}}">{{.Role}}</span></td>
+              <td>
+                {{if ne .ID $.User.ID}}
+                <form method="post" action="/admin/users/delete" class="inline">
+                  <input type="hidden" name="csrf" value="{{$.User.CSRF}}">
+                  <input type="hidden" name="id" value="{{.ID}}">
+                  <button class="danger small-btn" onclick="return confirm('Remove this user?')">Remove</button>
+                </form>
+                {{end}}
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+// ── Tabs ──────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
+  });
+});
+// Init: hide users tab on load
+document.getElementById('tab-users').style.display = 'none';
+
+// ── Item filter ───────────────────────────────────────────
+document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn[data-filter]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const f = btn.dataset.filter;
+    document.querySelectorAll('#itemTable tbody tr').forEach(row => {
+      const cat = (row.dataset.cat || '').toUpperCase();
+      if (f === 'all')     row.style.display = '';
+      else if (f === 'adult')   row.style.display = cat === 'A' ? '' : 'none';
+      else if (f === 'kid')     row.style.display = cat === 'K' ? '' : 'none';
+      else if (f === 'sponsor') row.style.display = cat === 'S' ? '' : 'none';
+    });
+  });
+});
+
+// ── User filter ───────────────────────────────────────────
+document.querySelectorAll('.filter-btn[data-userfilter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn[data-userfilter]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const f = btn.dataset.userfilter;
+    document.querySelectorAll('#userTable tbody tr').forEach(row => {
+      row.style.display = (f === 'all' || row.dataset.role === f) ? '' : 'none';
+    });
+  });
+});
+
+// ── Category stats ────────────────────────────────────────
+(function() {
+  let a = 0, k = 0, s = 0;
+  document.querySelectorAll('#itemTable tbody tr').forEach(row => {
+    const scanned = row.dataset.scanned;
+    if (!scanned) return;
+    const cat = row.dataset.cat || '';
+    if (cat.startsWith('A')) a++;
+    else if (cat.startsWith('K')) k++;
+    else if (cat.startsWith('S')) s++;
+  });
+  document.getElementById('statAdult').textContent   = a;
+  document.getElementById('statKid').textContent     = k;
+  document.getElementById('statSponsor').textContent = s;
+})();
+
+// ── Open correct tab from URL hash ───────────────────────
+if (location.hash === '#users') {
+  document.querySelector('[data-tab="users"]').click();
+}
+</script>
+</body>
+</html>
