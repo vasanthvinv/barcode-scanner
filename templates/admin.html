@@ -215,20 +215,46 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
 
-// ── Item filter ───────────────────────────────────────────
-document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
+// ── Tabs ──────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.filter-btn[data-filter]').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
     btn.classList.add('active');
-    const f = btn.dataset.filter;
-    document.querySelectorAll('#itemTable tbody tr').forEach(row => {
-      const cat = (row.dataset.cat || '').toUpperCase();
-      if (f === 'all')     row.style.display = '';
-      else if (f === 'adult')   row.style.display = cat === 'A' ? '' : 'none';
-      else if (f === 'kid')     row.style.display = cat === 'K' ? '' : 'none';
-      else if (f === 'sponsor') row.style.display = cat === 'S' ? '' : 'none';
-    });
+    document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
   });
+});
+document.getElementById('tab-users').style.display = 'none';
+
+// ── Item filter ───────────────────────────────────────────
+let currentFilter = 'all';
+
+function applyFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn[data-filter]').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  document.querySelectorAll('#itemTable tbody tr').forEach(row => {
+    const cat = (row.dataset.cat || '').toUpperCase();
+    let show = false;
+    if (f === 'all')          show = true;
+    else if (f === 'adult')   show = cat === 'A';
+    else if (f === 'kid')     show = cat === 'K';
+    else if (f === 'sponsor') show = cat === 'S';
+    row.style.display = show ? '' : 'none';
+    if (!show) {
+      const chk = row.querySelector('.item-chk');
+      if (chk) chk.checked = false;
+    }
+  });
+  updateDeleteBar();
+  const visible = visibleCheckboxes();
+  const selectAll = document.getElementById('selectAll');
+  if (selectAll) selectAll.checked = visible.length > 0 && visible.every(c => c.checked);
+}
+
+document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => applyFilter(btn.dataset.filter));
 });
 
 // ── User filter ───────────────────────────────────────────
@@ -244,9 +270,16 @@ document.querySelectorAll('.filter-btn[data-userfilter]').forEach(btn => {
 });
 
 // ── Checkbox delete ───────────────────────────────────────
-const deleteBar    = document.getElementById('deleteBar');
+const deleteBar     = document.getElementById('deleteBar');
 const selectedCount = document.getElementById('selectedCount');
-const selectAll    = document.getElementById('selectAll');
+const selectAll     = document.getElementById('selectAll');
+
+function visibleCheckboxes() {
+  return Array.from(document.querySelectorAll('#itemTable tbody tr'))
+    .filter(row => row.style.display !== 'none')
+    .map(row => row.querySelector('.item-chk'))
+    .filter(Boolean);
+}
 
 function updateDeleteBar() {
   const checked = document.querySelectorAll('.item-chk:checked');
@@ -259,46 +292,42 @@ function updateDeleteBar() {
 }
 
 function clearSelection() {
-  document.querySelectorAll('.item-chk:checked').forEach(c => c.checked = false);
+  document.querySelectorAll('.item-chk').forEach(c => c.checked = false);
   if (selectAll) selectAll.checked = false;
   updateDeleteBar();
 }
 
-document.querySelectorAll('.item-chk').forEach(chk => {
-  chk.addEventListener('change', updateDeleteBar);
+// Use event delegation on table body for checkbox changes
+document.querySelector('#itemTable tbody').addEventListener('change', function(e) {
+  if (e.target.classList.contains('item-chk')) {
+    updateDeleteBar();
+    // Update selectAll state
+    const visible = visibleCheckboxes();
+    if (selectAll) selectAll.checked = visible.length > 0 && visible.every(c => c.checked);
+  }
 });
 
 if (selectAll) {
   selectAll.addEventListener('change', () => {
-    // Only select visible (non-hidden) rows
-    document.querySelectorAll('#itemTable tbody tr').forEach(row => {
-      if (row.style.display !== 'none') {
-        const chk = row.querySelector('.item-chk');
-        if (chk) chk.checked = selectAll.checked;
-      }
-    });
+    visibleCheckboxes().forEach(chk => { chk.checked = selectAll.checked; });
     updateDeleteBar();
   });
 }
+
+// ── Category stats ────────────────────────────────────────
 (function() {
   let a = 0, k = 0, s = 0;
   document.querySelectorAll('#itemTable tbody tr').forEach(row => {
-    const scanned = row.dataset.scanned;
-    if (!scanned) return;
+    if (!row.dataset.scanned) return;
     const cat = row.dataset.cat || '';
-    if (cat.startsWith('A')) a++;
-    else if (cat.startsWith('K')) k++;
-    else if (cat.startsWith('S')) s++;
+    if (cat === 'A') a++;
+    else if (cat === 'K') k++;
+    else if (cat === 'S') s++;
   });
   document.getElementById('statAdult').textContent   = a;
   document.getElementById('statKid').textContent     = k;
   document.getElementById('statSponsor').textContent = s;
 })();
-
-// ── Open correct tab from URL hash ───────────────────────
-if (location.hash === '#users') {
-  document.querySelector('[data-tab="users"]').click();
-}
 
 }); // DOMContentLoaded
 </script>
