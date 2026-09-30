@@ -150,34 +150,6 @@ function initApp() {
       if (scanLine) scanLine.classList.remove('active');
     }
   });
-
-  // ── Image upload scan ───────────────────────────────────
-  const imageUpload = document.getElementById('imageUpload');
-  if (imageUpload) {
-    imageUpload.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      if (!window.Html5Qrcode) {
-        showResult('error', '⚠️', 'Library not loaded', '', 'Please reload the page.');
-        return;
-      }
-      showResult('pending', '⏳', 'Scanning image…', '', '');
-      try {
-        const imgScanner = new Html5Qrcode('__img_scanner__');
-        const result = await imgScanner.scanFile(file, true);
-        // Strip AIM identifier prefix/suffix
-        const value = result.replace(/^\][A-Z][0-9]/, '').replace(/\][A-Z][0-9]$/, '').trim();
-        lastValue = ''; // reset debounce
-        checkBarcode(value);
-      } catch (err) {
-        showResult('error', '❌', 'No barcode found', '', 'Could not detect a barcode in the image. Try a clearer photo.');
-      }
-      imageUpload.value = ''; // reset so same file can be uploaded again
-    });
-  }
-
-  stopBtn.addEventListener('click', stopCamera);
-
   async function stopCamera() {
     if (scanner && scanning) {
       try { await scanner.stop(); } catch(_) {}

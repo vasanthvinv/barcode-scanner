@@ -374,19 +374,6 @@ video, #video {
   padding: 1rem;
 }
 .manual-row { display: flex; gap: .75rem; }
-.upload-scan-row { margin-top: .75rem; text-align: center; }
-.upload-scan-btn {
-  display: inline-block;
-  padding: .6rem 1.5rem;
-  background: #f0f2f5;
-  border: 1.5px dashed #bbb;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: .95rem;
-  font-weight: 600;
-  color: #444;
-}
-.upload-scan-btn:hover { background: #e5e7eb; border-color: #888; }
 .barcode-input {
   flex: 1;
   font-size: 1.1rem;
