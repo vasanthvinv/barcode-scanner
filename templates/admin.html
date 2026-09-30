@@ -99,11 +99,11 @@
         <input type="hidden" name="csrf" value="{{.User.CSRF}}">
         <div class="delete-bar" id="deleteBar" style="display:none">
           <span id="selectedCount">0</span> item(s) selected —
-          <button type="submit" class="danger small-btn"
+          <button type="submit" class="danger small-btn" id="deleteBtn"
             onclick="return confirm('Delete selected items? Scanned items will be blocked.')">
             🗑 Delete Selected
           </button>
-          <button type="button" class="secondary small-btn" onclick="clearSelection()">Cancel</button>
+          <button type="button" class="secondary small-btn" id="cancelDeleteBtn">Cancel</button>
         </div>
 
       <div class="tablewrap">
@@ -295,6 +295,18 @@ function clearSelection() {
   document.querySelectorAll('.item-chk').forEach(c => c.checked = false);
   if (selectAll) selectAll.checked = false;
   updateDeleteBar();
+}
+
+const cancelBtn = document.getElementById('cancelDeleteBtn');
+if (cancelBtn) cancelBtn.addEventListener('click', clearSelection);
+
+const deleteBtn = document.getElementById('deleteBtn');
+if (deleteBtn) {
+  deleteBtn.addEventListener('click', function(e) {
+    if (!confirm('Delete selected items? Scanned items will be blocked.')) {
+      e.preventDefault();
+    }
+  });
 }
 
 // Use event delegation on table body for checkbox changes
