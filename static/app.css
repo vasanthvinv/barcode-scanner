@@ -123,6 +123,19 @@ button.secondary { background: #fff; color: #111; }
 /* Show correct panel when radio checked */
 #tab-items-radio:checked ~ #tab-items { display: block; }
 #tab-users-radio:checked ~ #tab-users { display: block; }
+/* ── Delete bar ───────────────────────────────────────── */
+.delete-bar {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .75rem 1rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  margin-bottom: .75rem;
+  flex-wrap: wrap;
+}
+
 /* ── Filter row ───────────────────────────────────────── */
 .list-header {
   display: flex;

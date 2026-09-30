@@ -107,6 +107,7 @@ func main() {
 	mux.Handle("POST /admin/users/add", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.addUser))))
 	mux.Handle("POST /admin/users/delete", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.deleteUser))))
 	mux.Handle("POST /admin/items/upload", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.uploadItems))))
+	mux.Handle("POST /admin/items/delete", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.deleteItems))))
 	mux.Handle("POST /admin/items/clear-scans", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.clearScans))))
 
 	handler := securityHeaders(logRequests(mux))
@@ -372,6 +373,7 @@ WHERE scans.item_id = ?`, itemID).Scan(&scannedBy, &scannedAt)
 }
 
 type ItemRow struct {
+	ID            int64
 	Barcode       string
 	Name          string
 	Category      string
@@ -393,7 +395,7 @@ func (a *App) adminPage(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch items with scan info
 	rows, err := a.db.QueryContext(r.Context(), `
-		SELECT i.barcode, i.name,
+		SELECT i.id, i.barcode, i.name,
 		       COALESCE(u.name,'') as scanned_by,
 		       COALESCE(s.scanned_at,'') as scanned_at
 		FROM items i
@@ -405,7 +407,7 @@ func (a *App) adminPage(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var it ItemRow
-			if err := rows.Scan(&it.Barcode, &it.Name, &it.ScannedBy, &it.ScannedAt); err == nil {
+			if err := rows.Scan(&it.ID, &it.Barcode, &it.Name, &it.ScannedBy, &it.ScannedAt); err == nil {
 				// Derive category from name e.g. "Disc Dhol Dandiya - A001" or barcode prefix
 				cat := ""
 				if len(it.Name) > 0 {
@@ -538,28 +540,33 @@ func (a *App) uploadItems(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Replacement is deliberate: uploading a revised list resets scan state.
-	if _, err := tx.Exec(`DELETE FROM scans; DELETE FROM items;`); err != nil {
-		adminError(w, r, "Could not replace item list")
-		return
-	}
-	stmt, err := tx.Prepare(`INSERT INTO items(barcode,name,description) VALUES(?,?,?)`)
+	// Add only — never delete existing items or scans
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO items(barcode,name,description) VALUES(?,?,?)`)
 	if err != nil {
 		adminError(w, r, "Database error")
 		return
 	}
 	defer stmt.Close()
+
+	added, skipped := 0, 0
 	for _, it := range items {
-		if _, err := stmt.Exec(it.Barcode, it.Name, it.Description); err != nil {
-			adminError(w, r, "Duplicate barcode in CSV: "+it.Barcode)
+		res, err := stmt.Exec(it.Barcode, it.Name, it.Description)
+		if err != nil {
+			adminError(w, r, "Database error on barcode: "+it.Barcode)
 			return
+		}
+		rows, _ := res.RowsAffected()
+		if rows == 0 {
+			skipped++
+		} else {
+			added++
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		adminError(w, r, "Could not save item list")
 		return
 	}
-	adminMessage(w, r, fmt.Sprintf("Loaded %d items; previous scan marks were reset", len(items)))
+	adminMessage(w, r, fmt.Sprintf("Added %d items, skipped %d duplicates", added, skipped))
 }
 
 type itemCSV struct {
@@ -623,6 +630,49 @@ func parseItemsCSV(file multipart.File) ([]itemCSV, error) {
 		return nil, errors.New("CSV contains no items")
 	}
 	return items, nil
+}
+
+func (a *App) deleteItems(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		adminError(w, r, "Invalid form")
+		return
+	}
+	ids := r.Form["item_ids"]
+	if len(ids) == 0 {
+		adminError(w, r, "No items selected")
+		return
+	}
+
+	// Build safe placeholders
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	// Check if any selected item is already scanned
+	var scannedCount int
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM scans WHERE item_id IN (%s)`, inClause)
+	if err := a.db.QueryRow(query, args...).Scan(&scannedCount); err != nil {
+		adminError(w, r, "Database error")
+		return
+	}
+	if scannedCount > 0 {
+		adminError(w, r, fmt.Sprintf("Cannot delete: %d selected item(s) have already been scanned. Clear their scan marks first.", scannedCount))
+		return
+	}
+
+	// Safe to delete
+	delQuery := fmt.Sprintf(`DELETE FROM items WHERE id IN (%s)`, inClause)
+	res, err := a.db.Exec(delQuery, args...)
+	if err != nil {
+		adminError(w, r, "Could not delete items")
+		return
+	}
+	deleted, _ := res.RowsAffected()
+	adminMessage(w, r, fmt.Sprintf("Deleted %d item(s)", deleted))
 }
 
 func (a *App) clearScans(w http.ResponseWriter, r *http.Request) {

@@ -52,7 +52,7 @@
         <input type="hidden" name="csrf" value="{{.User.CSRF}}">
         <div class="upload-row">
           <input type="file" name="items_csv" accept=".csv,text/csv" required>
-          <button type="submit">Upload / Replace CSV</button>
+          <button type="submit">Add Items from CSV</button>
         </div>
       </form>
     </section>
@@ -95,10 +95,22 @@
         </form>
       </div>
 
+      <form method="post" action="/admin/items/delete" id="deleteItemsForm">
+        <input type="hidden" name="csrf" value="{{.User.CSRF}}">
+        <div class="delete-bar" id="deleteBar" style="display:none">
+          <span id="selectedCount">0</span> item(s) selected —
+          <button type="submit" class="danger small-btn"
+            onclick="return confirm('Delete selected items? Scanned items will be blocked.')">
+            🗑 Delete Selected
+          </button>
+          <button type="button" class="secondary small-btn" onclick="clearSelection()">Cancel</button>
+        </div>
+
       <div class="tablewrap">
         <table id="itemTable">
           <thead>
             <tr>
+              <th><input type="checkbox" id="selectAll" title="Select all visible"></th>
               <th>Barcode</th>
               <th>Name</th>
               <th>Category</th>
@@ -110,6 +122,13 @@
           <tbody>
             {{range .Items}}
             <tr data-cat="{{.Category}}" data-scanned="{{.ScannedBy}}">
+              <td>
+                {{if eq .ScannedBy ""}}
+                <input type="checkbox" name="item_ids" value="{{.ID}}" class="item-chk">
+                {{else}}
+                <span title="Cannot delete scanned item">🔒</span>
+                {{end}}
+              </td>
               <td><code>{{.Barcode}}</code></td>
               <td>{{.Name}}</td>
               <td><span class="badge badge-{{.CategoryLower}}">{{.Category}}</span></td>
@@ -127,6 +146,7 @@
           </tbody>
         </table>
       </div>
+      </form>
     </section>
   </div>
 
@@ -223,7 +243,43 @@ document.querySelectorAll('.filter-btn[data-userfilter]').forEach(btn => {
   });
 });
 
-// ── Category stats ────────────────────────────────────────
+// ── Checkbox delete ───────────────────────────────────────
+const deleteBar    = document.getElementById('deleteBar');
+const selectedCount = document.getElementById('selectedCount');
+const selectAll    = document.getElementById('selectAll');
+
+function updateDeleteBar() {
+  const checked = document.querySelectorAll('.item-chk:checked');
+  if (checked.length > 0) {
+    deleteBar.style.display = 'flex';
+    selectedCount.textContent = checked.length;
+  } else {
+    deleteBar.style.display = 'none';
+  }
+}
+
+function clearSelection() {
+  document.querySelectorAll('.item-chk:checked').forEach(c => c.checked = false);
+  if (selectAll) selectAll.checked = false;
+  updateDeleteBar();
+}
+
+document.querySelectorAll('.item-chk').forEach(chk => {
+  chk.addEventListener('change', updateDeleteBar);
+});
+
+if (selectAll) {
+  selectAll.addEventListener('change', () => {
+    // Only select visible (non-hidden) rows
+    document.querySelectorAll('#itemTable tbody tr').forEach(row => {
+      if (row.style.display !== 'none') {
+        const chk = row.querySelector('.item-chk');
+        if (chk) chk.checked = selectAll.checked;
+      }
+    });
+    updateDeleteBar();
+  });
+}
 (function() {
   let a = 0, k = 0, s = 0;
   document.querySelectorAll('#itemTable tbody tr').forEach(row => {
