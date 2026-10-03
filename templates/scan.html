@@ -18,52 +18,76 @@
   </nav>
 </header>
 
-<main class="scan-main scancontainer" data-csrf="{{.User.CSRF}}">
+<main class="scan-main scancontainer"
+      data-csrf="{{.User.CSRF}}"
+      data-role="{{.User.Role}}">
 
-  <!-- Today counter -->
-  <div class="today-bar">
-    <span class="today-label">Today's scans</span>
-    <span class="today-count" id="todayCount">0</span>
+  <!-- Page tabs: Scan | Scanned -->
+  <div class="scan-tabs">
+    <button type="button" class="scan-tab-btn active" data-stab="scan">📷 Scan</button>
+    <button type="button" class="scan-tab-btn" data-stab="scanned">✅ Scanned <span id="scannedBadge" class="badge-count">0</span></button>
   </div>
 
-  <!-- Camera section -->
-  <section class="camera-card">
-    <div class="video-wrap">
-      <div id="video"></div>
-      <!-- Scan frame overlay -->
-      <div class="scan-frame">
-        <div class="corner tl"></div>
-        <div class="corner tr"></div>
-        <div class="corner bl"></div>
-        <div class="corner br"></div>
-        <div class="scan-line" id="scanLine"></div>
+  <!-- ── SCAN TAB ─────────────────────────────── -->
+  <div id="stab-scan">
+
+    <!-- Today counter -->
+    <div class="today-bar">
+      <span class="today-label">Today's scans</span>
+      <span class="today-count" id="todayCount">0</span>
+    </div>
+
+    <!-- Camera section -->
+    <section class="camera-card">
+      <div class="video-wrap">
+        <div id="video"></div>
+        <div class="scan-frame">
+          <div class="corner tl"></div>
+          <div class="corner tr"></div>
+          <div class="corner bl"></div>
+          <div class="corner br"></div>
+          <div class="scan-line" id="scanLine"></div>
+        </div>
+        <div class="video-hint" id="videoHint">Point barcode at the frame</div>
       </div>
-      <div class="video-hint" id="videoHint">Point barcode at the frame</div>
-    </div>
+      <div class="camera-actions">
+        <button id="startCamera" type="button" class="cam-btn start">▶ Start Camera</button>
+        <button id="stopCamera" type="button" class="cam-btn stop" disabled>■ Stop</button>
+      </div>
+      <p id="cameraHelp" class="muted small center-text">Camera requires HTTPS or localhost.</p>
+    </section>
 
-    <div class="camera-actions">
-      <button id="startCamera" type="button" class="cam-btn start">▶ Start Camera</button>
-      <button id="stopCamera" type="button" class="cam-btn stop" disabled>■ Stop</button>
-    </div>
-    <p id="cameraHelp" class="muted small center-text">Camera requires HTTPS or localhost.</p>
-  </section>
+    <!-- Result card -->
+    <section id="result" class="result-card hidden" aria-live="polite">
+      <div class="result-icon" id="resultIcon"></div>
+      <div class="result-title" id="resultTitle"></div>
+      <div class="result-item" id="resultItem"></div>
+      <div class="result-msg" id="resultMsg"></div>
+    </section>
 
-  <!-- Result card — big and prominent -->
-  <section id="result" class="result-card hidden" aria-live="polite">
-    <div class="result-icon" id="resultIcon"></div>
-    <div class="result-title" id="resultTitle"></div>
-    <div class="result-item" id="resultItem"></div>
-    <div class="result-msg" id="resultMsg"></div>
-  </section>
+    <!-- Manual entry -->
+    <section class="manual-card">
+      <div class="manual-row">
+        <input id="barcodeInput" inputmode="numeric" autocomplete="off"
+               placeholder="Enter barcode number" class="barcode-input">
+        <button id="submitBarcode" type="button" class="check-btn">Check</button>
+      </div>
+    </section>
 
-  <!-- Manual entry -->
-  <section class="manual-card">
-    <div class="manual-row">
-      <input id="barcodeInput" inputmode="numeric" autocomplete="off"
-             placeholder="Enter barcode number" class="barcode-input">
-      <button id="submitBarcode" type="button" class="check-btn">Check</button>
+  </div><!-- end stab-scan -->
+
+  <!-- ── SCANNED TAB ──────────────────────────── -->
+  <div id="stab-scanned" style="display:none">
+    <div class="scanned-header">
+      <span class="muted small" id="scannedSubtitle">Today's scans</span>
+      {{if eq .User.Role "admin"}}
+      <a href="/admin/scans/export" class="export-btn">⬇ Export CSV</a>
+      {{end}}
     </div>
-  </section>
+    <div id="scannedList" class="scanned-list">
+      <p class="muted small center-text" style="padding:1rem">Loading…</p>
+    </div>
+  </div>
 
 </main>
 

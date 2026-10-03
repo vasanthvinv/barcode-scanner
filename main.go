@@ -102,6 +102,9 @@ func main() {
 	mux.Handle("GET /", app.requireAuth(http.HandlerFunc(app.home)))
 	mux.Handle("GET /scan", app.requireAuth(http.HandlerFunc(app.scanPage)))
 	mux.Handle("POST /api/scan", app.requireAuth(app.requireCSRF(http.HandlerFunc(app.scanAPI))))
+	mux.Handle("GET /api/scans/today", app.requireAuth(http.HandlerFunc(app.todayScansAPI)))
+	mux.Handle("POST /api/scan/undo", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.undoScan))))
+	mux.Handle("GET /admin/scans/export", app.requireAdmin(http.HandlerFunc(app.exportScansCSV)))
 
 	mux.Handle("GET /admin", app.requireAdmin(http.HandlerFunc(app.adminPage)))
 	mux.Handle("POST /admin/users/add", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.addUser))))
@@ -380,6 +383,90 @@ type ItemRow struct {
 	CategoryLower string
 	ScannedBy     string
 	ScannedAt     string
+}
+
+func (a *App) todayScansAPI(w http.ResponseWriter, r *http.Request) {
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT s.id, i.barcode, i.name, u.name, s.scanned_at
+		FROM scans s
+		JOIN items i ON i.id = s.item_id
+		JOIN users u ON u.id = s.user_id
+		WHERE DATE(s.scanned_at) = DATE('now')
+		ORDER BY s.scanned_at DESC
+		LIMIT 200`)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "db error"})
+		return
+	}
+	defer rows.Close()
+	type scanRow struct {
+		ID        int64  `json:"id"`
+		Barcode   string `json:"barcode"`
+		Name      string `json:"name"`
+		ScannedBy string `json:"scanned_by"`
+		ScannedAt string `json:"scanned_at"`
+	}
+	var out []scanRow
+	for rows.Next() {
+		var s scanRow
+		if err := rows.Scan(&s.ID, &s.Barcode, &s.Name, &s.ScannedBy, &s.ScannedAt); err == nil {
+			out = append(out, s)
+		}
+	}
+	if out == nil {
+		out = []scanRow{}
+	}
+	writeJSON(w, 200, out)
+}
+
+func (a *App) undoScan(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid form"})
+		return
+	}
+	scanID := r.FormValue("scan_id")
+	if scanID == "" {
+		writeJSON(w, 400, map[string]any{"error": "scan_id required"})
+		return
+	}
+	res, err := a.db.Exec(`DELETE FROM scans WHERE id = ?`, scanID)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "db error"})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, 404, map[string]any{"error": "scan not found"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (a *App) exportScansCSV(w http.ResponseWriter, r *http.Request) {
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT s.id, i.barcode, i.name, u.name, s.scanned_at
+		FROM scans s
+		JOIN items i ON i.id = s.item_id
+		JOIN users u ON u.id = s.user_id
+		ORDER BY s.scanned_at DESC`)
+	if err != nil {
+		http.Error(w, "db error", 500)
+		return
+	}
+	defer rows.Close()
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="scan_history.csv"`)
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"id", "barcode", "name", "scanned_by", "scanned_at"})
+	for rows.Next() {
+		var id int64
+		var barcode, name, scannedBy, scannedAt string
+		if err := rows.Scan(&id, &barcode, &name, &scannedBy, &scannedAt); err == nil {
+			_ = cw.Write([]string{fmt.Sprintf("%d", id), barcode, name, scannedBy, scannedAt})
+		}
+	}
+	cw.Flush()
 }
 
 func (a *App) adminPage(w http.ResponseWriter, r *http.Request) {

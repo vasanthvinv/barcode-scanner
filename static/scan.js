@@ -5,8 +5,8 @@
   s.src = '/static/html5-qrcode.min.js';
   s.onload  = initApp;
   s.onerror = () => {
-    document.getElementById('cameraHelp').textContent =
-      'Could not load barcode library. Please reload.';
+    const h = document.getElementById('cameraHelp');
+    if (h) h.textContent = 'Could not load barcode library. Please reload.';
     initApp();
   };
   document.head.appendChild(s);
@@ -15,6 +15,7 @@
 function initApp() {
   const root       = document.querySelector('.scancontainer');
   const csrf       = root.dataset.csrf;
+  const isAdmin    = root.dataset.role === 'admin';
   const input      = document.getElementById('barcodeInput');
   const startBtn   = document.getElementById('startCamera');
   const stopBtn    = document.getElementById('stopCamera');
@@ -23,6 +24,7 @@ function initApp() {
   const scanLine   = document.getElementById('scanLine');
   const videoHint  = document.getElementById('videoHint');
   const todayCount = document.getElementById('todayCount');
+  const badge      = document.getElementById('scannedBadge');
 
   let scanner    = null;
   let scanning   = false;
@@ -30,6 +32,19 @@ function initApp() {
   let lastAt     = 0;
   let todayScans = 0;
   let audioCtx   = null;
+
+  // ── Scan page tabs ──────────────────────────────────────
+
+  document.querySelectorAll('.scan-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.scan-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.stab;
+      document.getElementById('stab-scan').style.display    = tab === 'scan'    ? '' : 'none';
+      document.getElementById('stab-scanned').style.display = tab === 'scanned' ? '' : 'none';
+      if (tab === 'scanned') loadScannedList();
+    });
+  });
 
   // ── Sound feedback ──────────────────────────────────────
 
@@ -46,7 +61,6 @@ function initApp() {
       gain.connect(ctx.destination);
 
       if (type === 'valid') {
-        // Two rising beeps
         osc.frequency.setValueAtTime(880, ctx.currentTime);
         osc.frequency.setValueAtTime(1320, ctx.currentTime + 0.12);
         gain.gain.setValueAtTime(0.3, ctx.currentTime);
@@ -54,7 +68,6 @@ function initApp() {
         osc.start(ctx.currentTime);
         osc.stop(ctx.currentTime + 0.35);
       } else if (type === 'used') {
-        // Two descending beeps
         osc.frequency.setValueAtTime(660, ctx.currentTime);
         osc.frequency.setValueAtTime(440, ctx.currentTime + 0.15);
         gain.gain.setValueAtTime(0.3, ctx.currentTime);
@@ -62,7 +75,6 @@ function initApp() {
         osc.start(ctx.currentTime);
         osc.stop(ctx.currentTime + 0.35);
       } else if (type === 'invalid') {
-        // Low buzz
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(220, ctx.currentTime);
         gain.gain.setValueAtTime(0.3, ctx.currentTime);
@@ -112,6 +124,7 @@ function initApp() {
         showResult('valid', '✅', 'Valid — Entry Allowed', data.item, data.message);
         todayScans++;
         todayCount.textContent = todayScans;
+        if (badge) badge.textContent = todayScans;
         playSound('valid');
         if (navigator.vibrate) navigator.vibrate(80);
       } else if (data.status === 'duplicate') {
@@ -129,6 +142,84 @@ function initApp() {
     } catch (e) {
       showResult('error', '⚠️', 'Network Error', '', 'Could not reach the server.');
     }
+  }
+
+  // ── Scanned list ────────────────────────────────────────
+
+  async function loadScannedList() {
+    const list = document.getElementById('scannedList');
+    if (!list) return;
+    try {
+      const res  = await fetch('/api/scans/today');
+      const data = await res.json();
+
+      if (!data.length) {
+        list.innerHTML = '<p class="muted small center-text" style="padding:1rem">No scans today.</p>';
+        return;
+      }
+
+      const sub = document.getElementById('scannedSubtitle');
+      if (sub) sub.textContent = `Today's scans — ${data.length} total`;
+      if (badge) badge.textContent = data.length;
+      todayScans = data.length;
+      todayCount.textContent = data.length;
+
+      list.innerHTML = data.map(s => `
+        <div class="scanned-row" data-id="${s.id}">
+          <div class="scanned-info">
+            <span class="scanned-name">${esc(s.name)}</span>
+            <span class="scanned-meta">${esc(s.scanned_by)} · ${formatTime(s.scanned_at)}</span>
+          </div>
+          ${isAdmin ? `<button type="button" class="undo-btn" data-id="${s.id}" data-name="${esc(s.name)}">↩ Undo</button>` : ''}
+        </div>`).join('');
+
+      // Undo button listeners
+      list.querySelectorAll('.undo-btn').forEach(btn => {
+        btn.addEventListener('click', () => undoScan(btn.dataset.id, btn.dataset.name));
+      });
+
+    } catch(e) {
+      list.innerHTML = '<p class="muted small center-text" style="padding:1rem">Could not load scans.</p>';
+    }
+  }
+
+  async function undoScan(scanId, name) {
+    if (!confirm(`Undo scan for "${name}"?\n\nThis will mark the ticket as unused again.`)) return;
+    try {
+      const res  = await fetch('/api/scan/undo', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
+        body:    `scan_id=${encodeURIComponent(scanId)}`,
+      });
+      const data = await res.json();
+      if (data.ok) {
+        // Remove row from list
+        const row = document.querySelector(`.scanned-row[data-id="${scanId}"]`);
+        if (row) row.remove();
+        // Update count
+        const remaining = document.querySelectorAll('.scanned-row').length;
+        if (badge) badge.textContent = remaining;
+        todayScans = Math.max(0, todayScans - 1);
+        todayCount.textContent = todayScans;
+        const sub = document.getElementById('scannedSubtitle');
+        if (sub) sub.textContent = `Today's scans — ${remaining} total`;
+      } else {
+        alert('Undo failed: ' + (data.error || 'unknown error'));
+      }
+    } catch(e) {
+      alert('Network error');
+    }
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>'"]/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts.replace(' ', 'T') + 'Z');
+    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
   }
 
   // ── Manual entry ────────────────────────────────────────
@@ -195,4 +286,15 @@ function initApp() {
     startBtn.disabled = false;
     stopBtn.disabled  = true;
   }
+
+  // Load initial today count
+  fetch('/api/scans/today')
+    .then(r => r.json())
+    .then(data => {
+      if (data.length) {
+        todayScans = data.length;
+        todayCount.textContent = data.length;
+        if (badge) badge.textContent = data.length;
+      }
+    }).catch(() => {});
 }
