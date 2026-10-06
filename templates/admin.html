@@ -47,13 +47,21 @@
     <!-- Upload -->
     <section class="card">
       <h2>Upload Item CSV</h2>
-      <p class="muted small">CSV must have <code>barcode</code> and <code>name</code> columns. Uploading replaces the current list and resets all scan marks.</p>
+      <p class="muted small">
+        Supported columns: <code>barcode</code>, <code>name</code> (required) ·
+        <code>pass_no</code> / <code>adult_ticket</code> / <code>kid_ticket</code> (optional) ·
+        <code>description</code> (optional).
+      </p>
       <form method="post" action="/admin/items/upload" enctype="multipart/form-data">
         <input type="hidden" name="csrf" value="{{.User.CSRF}}">
         <div class="upload-row">
           <input type="file" name="items_csv" accept=".csv,text/csv" required>
-          <button type="submit">Add Items from CSV</button>
+          <button type="submit">Upload CSV</button>
         </div>
+        <label class="replace-label">
+          <input type="checkbox" name="replace_all" value="1">
+          <span><strong>Replace all items</strong> — deletes all existing items and scan marks, then imports fresh from this file</span>
+        </label>
       </form>
     </section>
 
@@ -61,12 +69,16 @@
     <section class="card">
       <div class="list-header">
         <h2 style="margin:0">Items</h2>
-        <div class="filter-row">
-          <label class="filter-label">Filter:</label>
-          <button type="button" class="filter-btn active" data-filter="all">All</button>
-          <button type="button" class="filter-btn" data-filter="adult">Adult (A)</button>
-          <button type="button" class="filter-btn" data-filter="kid">Kid (K)</button>
-          <button type="button" class="filter-btn" data-filter="sponsor">Sponsor (S)</button>
+        <div class="list-header-controls">
+          <input type="search" id="itemSearch" class="item-search-input"
+                 placeholder="🔍 Search barcode or pass no…" autocomplete="off">
+          <div class="filter-row">
+            <label class="filter-label">Filter:</label>
+            <button type="button" class="filter-btn active" data-filter="all">All</button>
+            <button type="button" class="filter-btn" data-filter="adult">Adult (A)</button>
+            <button type="button" class="filter-btn" data-filter="kid">Kid (K)</button>
+            <button type="button" class="filter-btn" data-filter="sponsor">Sponsor (S)</button>
+          </div>
         </div>
       </div>
 
@@ -107,6 +119,7 @@
         </div>
 
       <div class="tablewrap">
+        <div id="searchHint" class="search-hint" style="display:none"></div>
         <table id="itemTable">
           <thead>
             <tr>
@@ -121,7 +134,8 @@
           </thead>
           <tbody>
             {{range .Items}}
-            <tr data-cat="{{.Category}}" data-scanned="{{.ScannedBy}}">
+            <tr data-cat="{{.Category}}" data-scanned="{{.ScannedBy}}"
+                data-barcode="{{.Barcode}}" data-name="{{.Name}}">
               <td>
                 {{if eq .ScannedBy ""}}
                 <input type="checkbox" name="item_ids" value="{{.ID}}" class="item-chk">
@@ -217,25 +231,52 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ── Item filter ───────────────────────────────────────────
 let currentFilter = 'all';
+let currentSearch = '';
 
 function applyFilter(f) {
   currentFilter = f;
   document.querySelectorAll('.filter-btn[data-filter]').forEach(b => {
     b.classList.toggle('active', b.dataset.filter === f);
   });
+  applyVisibility();
+}
+
+function applyVisibility() {
+  const q = currentSearch.toLowerCase();
+  let visibleCount = 0;
   document.querySelectorAll('#itemTable tbody tr').forEach(row => {
     const cat = (row.dataset.cat || '').toUpperCase();
-    let show = false;
-    if (f === 'all')          show = true;
-    else if (f === 'adult')   show = cat === 'A';
-    else if (f === 'kid')     show = cat === 'K';
-    else if (f === 'sponsor') show = cat === 'S';
+    const barcode = (row.dataset.barcode || '').toLowerCase();
+    const name = (row.dataset.name || '').toLowerCase();
+
+    const catMatch =
+      currentFilter === 'all'    ? true :
+      currentFilter === 'adult'  ? cat === 'A' :
+      currentFilter === 'kid'    ? cat === 'K' :
+      currentFilter === 'sponsor'? cat === 'S' : true;
+
+    const searchMatch = q === '' || barcode.includes(q) || name.includes(q);
+
+    const show = catMatch && searchMatch;
     row.style.display = show ? '' : 'none';
     if (!show) {
       const chk = row.querySelector('.item-chk');
       if (chk) chk.checked = false;
     }
+    if (show) visibleCount++;
   });
+
+  // Update search result hint
+  const hint = document.getElementById('searchHint');
+  if (hint) {
+    if (q) {
+      hint.textContent = `${visibleCount} result${visibleCount !== 1 ? 's' : ''} for "${currentSearch}"`;
+      hint.style.display = '';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+
   updateDeleteBar();
   const visible = visibleCheckboxes();
   const selectAll = document.getElementById('selectAll');
@@ -245,6 +286,23 @@ function applyFilter(f) {
 document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
   btn.addEventListener('click', () => applyFilter(btn.dataset.filter));
 });
+
+// ── Search input ──────────────────────────────────────────
+const itemSearch = document.getElementById('itemSearch');
+if (itemSearch) {
+  itemSearch.addEventListener('input', () => {
+    currentSearch = itemSearch.value.trim();
+    applyVisibility();
+  });
+  // Clear on Escape
+  itemSearch.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      itemSearch.value = '';
+      currentSearch = '';
+      applyVisibility();
+    }
+  });
+}
 
 // ── User filter ───────────────────────────────────────────
 document.querySelectorAll('.filter-btn[data-userfilter]').forEach(btn => {

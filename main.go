@@ -102,6 +102,7 @@ func main() {
 	mux.Handle("GET /", app.requireAuth(http.HandlerFunc(app.home)))
 	mux.Handle("GET /scan", app.requireAuth(http.HandlerFunc(app.scanPage)))
 	mux.Handle("POST /api/scan", app.requireAuth(app.requireCSRF(http.HandlerFunc(app.scanAPI))))
+	mux.Handle("POST /api/scan/lookup", app.requireAuth(app.requireCSRF(http.HandlerFunc(app.scanLookupAPI))))
 	mux.Handle("GET /api/scans/today", app.requireAuth(http.HandlerFunc(app.todayScansAPI)))
 	mux.Handle("POST /api/scan/undo", app.requireAdmin(app.requireCSRF(http.HandlerFunc(app.undoScan))))
 	mux.Handle("GET /admin/scans/export", app.requireAdmin(http.HandlerFunc(app.exportScansCSV)))
@@ -128,6 +129,7 @@ func main() {
 }
 
 func migrate(db *sql.DB) error {
+	// Base schema — idempotent on fresh databases.
 	_, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +149,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    barcode TEXT NOT NULL UNIQUE,
+    barcode TEXT NOT NULL,
+    pass_no TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT ''
 );
@@ -162,7 +165,53 @@ CREATE TABLE IF NOT EXISTS scans (
 CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Incremental migrations — safe to run repeatedly.
+	return migrateIncrements(db)
+}
+
+// migrateIncrements applies additive schema changes to existing databases.
+func migrateIncrements(db *sql.DB) error {
+	// Add pass_no column if this is an existing database without it.
+	var passNoExists int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='pass_no'`).Scan(&passNoExists)
+	if passNoExists == 0 {
+		if _, err := db.Exec(`ALTER TABLE items ADD COLUMN pass_no TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add pass_no column: %w", err)
+		}
+		log.Println("migration: added pass_no column to items")
+	}
+
+	// The old schema had UNIQUE on barcode alone; we now allow duplicate barcodes
+	// (multiple passes can share a barcode). We rebuild the table only when the
+	// old unique index still exists.
+	var oldUniqueIdx int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='sqlite_autoindex_items_1'`).Scan(&oldUniqueIdx)
+	if oldUniqueIdx > 0 {
+		// Rebuild items without the single-column barcode unique constraint.
+		if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS items_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    barcode TEXT NOT NULL,
+    pass_no TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO items_new(id,barcode,pass_no,name,description)
+    SELECT id,barcode,pass_no,name,description FROM items;
+DROP TABLE items;
+ALTER TABLE items_new RENAME TO items;
+CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
+`); err != nil {
+			return fmt.Errorf("remove barcode unique constraint: %w", err)
+		}
+		log.Println("migration: removed single-column UNIQUE constraint from items.barcode")
+	}
+
+	return nil
 }
 
 // bootstrapUsers imports a CSV only when the users table is empty.
@@ -311,8 +360,20 @@ func (a *App) scanPage(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "scan.html", map[string]any{"User": u})
 }
 
-func (a *App) scanAPI(w http.ResponseWriter, r *http.Request) {
-	u := mustUser(r)
+// passMatch represents a candidate item row returned during barcode-only lookup.
+type passMatch struct {
+	ID        int64  `json:"id"`
+	PassNo    string `json:"pass_no"`
+	Name      string `json:"name"`
+	Scanned   bool   `json:"scanned"`
+	ScannedBy string `json:"scanned_by,omitempty"`
+	ScannedAt string `json:"scanned_at,omitempty"`
+}
+
+// scanLookupAPI handles POST /api/scan/lookup.
+// It accepts a barcode and returns all matching passes with their scan status.
+// This is used by the frontend when OCR fails and multiple passes share a barcode.
+func (a *App) scanLookupAPI(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Barcode string `json:"barcode"`
 	}
@@ -321,6 +382,82 @@ func (a *App) scanAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	barcode := normalizeBarcode(in.Barcode)
+	if barcode == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "Empty barcode"})
+		return
+	}
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT i.id, i.pass_no, i.name,
+		       COALESCE(u.name,'') AS scanned_by,
+		       COALESCE(s.scanned_at,'') AS scanned_at
+		FROM items i
+		LEFT JOIN scans s ON s.item_id = i.id
+		LEFT JOIN users u ON u.id = s.user_id
+		WHERE i.barcode = ?
+		ORDER BY s.id IS NOT NULL ASC, i.pass_no ASC`, barcode)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"status": "error", "message": "Database error"})
+		return
+	}
+	defer rows.Close()
+
+	var matches []passMatch
+	for rows.Next() {
+		var m passMatch
+		var scannedBy, scannedAt string
+		if err := rows.Scan(&m.ID, &m.PassNo, &m.Name, &scannedBy, &scannedAt); err != nil {
+			continue
+		}
+		m.Scanned = scannedAt != ""
+		m.ScannedBy = scannedBy
+		m.ScannedAt = scannedAt
+		matches = append(matches, m)
+	}
+
+	if len(matches) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"status":  "not_found",
+			"barcode": barcode,
+			"message": "Barcode is not in the item list",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"barcode": barcode,
+		"matches": matches,
+	})
+}
+
+// scanAPI handles POST /api/scan.
+//
+// Request body (JSON):
+//
+//	{ "barcode": "...", "pass_no": "..." }   ← pass_no is optional
+//
+// Decision tree:
+//
+//	pass_no present → exact match (pass_no + barcode) → check/mark
+//	pass_no absent  → look up by barcode only
+//	                   0 results → not_found
+//	                   1 result  → treat as exact (auto-select)
+//	                   2+ results → return needs_selection (frontend shows UI)
+//
+// After selection the frontend re-POSTs with both barcode + pass_no,
+// which follows the exact-match path and validates the combination.
+func (a *App) scanAPI(w http.ResponseWriter, r *http.Request) {
+	u := mustUser(r)
+	var in struct {
+		Barcode string `json:"barcode"`
+		PassNo  string `json:"pass_no"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "Invalid request"})
+		return
+	}
+	barcode := normalizeBarcode(in.Barcode)
+	passNo := strings.TrimSpace(in.PassNo)
 	if barcode == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "Empty barcode"})
 		return
@@ -335,24 +472,85 @@ func (a *App) scanAPI(w http.ResponseWriter, r *http.Request) {
 
 	var itemID int64
 	var name string
-	err = tx.QueryRow(`SELECT id,name FROM items WHERE barcode = ?`, barcode).Scan(&itemID, &name)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "barcode": barcode, "message": "Barcode is not in the item list"})
-		return
-	}
-	if err != nil {
-		writeJSON(w, 500, map[string]any{"status": "error", "message": "Database error"})
-		return
+
+	if passNo != "" {
+		// ── Exact path: OCR provided a Pass No (or operator selected one) ────────
+		// Validate that this exact pass_no + barcode combination exists.
+		err = tx.QueryRow(
+			`SELECT id, name FROM items WHERE pass_no = ? AND barcode = ?`,
+			passNo, barcode,
+		).Scan(&itemID, &name)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"status":  "mismatch",
+				"barcode": barcode,
+				"pass_no": passNo,
+				"message": "Pass / barcode mismatch — no record matches this combination",
+			})
+			return
+		}
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"status": "error", "message": "Database error"})
+			return
+		}
+	} else {
+		// ── Barcode-only path: OCR failed or pass_no not provided ────────────────
+		// Count how many passes use this barcode.
+		rows, err := tx.QueryContext(r.Context(),
+			`SELECT id, name FROM items WHERE barcode = ?`, barcode)
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"status": "error", "message": "Database error"})
+			return
+		}
+
+		type candidate struct {
+			id   int64
+			name string
+		}
+		var candidates []candidate
+		for rows.Next() {
+			var c candidate
+			if err := rows.Scan(&c.id, &c.name); err == nil {
+				candidates = append(candidates, c)
+			}
+		}
+		rows.Close()
+
+		switch len(candidates) {
+		case 0:
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"status":  "not_found",
+				"barcode": barcode,
+				"message": "Barcode is not in the item list",
+			})
+			return
+		case 1:
+			// Unique match — proceed as if it were an exact match.
+			itemID = candidates[0].id
+			name = candidates[0].name
+		default:
+			// Multiple passes share this barcode — operator must choose.
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "needs_selection",
+				"barcode": barcode,
+				"message": "Multiple passes share this barcode. Please select the correct pass.",
+			})
+			return
+		}
 	}
 
+	// ── Check / mark ─────────────────────────────────────────────────────────
 	var scannedBy, scannedAt string
 	err = tx.QueryRow(`
-SELECT users.name, scans.scanned_at
-FROM scans JOIN users ON users.id = scans.user_id
-WHERE scans.item_id = ?`, itemID).Scan(&scannedBy, &scannedAt)
+		SELECT users.name, scans.scanned_at
+		FROM scans JOIN users ON users.id = scans.user_id
+		WHERE scans.item_id = ?`, itemID).Scan(&scannedBy, &scannedAt)
 	if err == nil {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"status": "duplicate", "barcode": barcode, "item": name,
+			"status":  "duplicate",
+			"barcode": barcode,
+			"pass_no": passNo,
+			"item":    name,
 			"message": fmt.Sprintf("Already scanned by %s at %s", scannedBy, scannedAt),
 		})
 		return
@@ -364,15 +562,27 @@ WHERE scans.item_id = ?`, itemID).Scan(&scannedBy, &scannedAt)
 
 	_, err = tx.Exec(`INSERT INTO scans(item_id,user_id) VALUES(?,?)`, itemID, u.ID)
 	if err != nil {
-		// UNIQUE(item_id) is the final duplicate-scan guard if two users scan simultaneously.
-		writeJSON(w, http.StatusConflict, map[string]any{"status": "duplicate", "barcode": barcode, "item": name, "message": "Item was already scanned"})
+		// UNIQUE(item_id) — race condition guard.
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"status":  "duplicate",
+			"barcode": barcode,
+			"pass_no": passNo,
+			"item":    name,
+			"message": "Item was already scanned",
+		})
 		return
 	}
 	if err := tx.Commit(); err != nil {
 		writeJSON(w, 500, map[string]any{"status": "error", "message": "Database error"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "success", "barcode": barcode, "item": name, "message": "Item marked successfully"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "success",
+		"barcode": barcode,
+		"pass_no": passNo,
+		"item":    name,
+		"message": "Item marked successfully",
+	})
 }
 
 type ItemRow struct {
@@ -482,7 +692,7 @@ func (a *App) adminPage(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch items with scan info
 	rows, err := a.db.QueryContext(r.Context(), `
-		SELECT i.id, i.barcode, i.name,
+		SELECT i.id, i.barcode, i.pass_no, i.name,
 		       COALESCE(u.name,'') as scanned_by,
 		       COALESCE(s.scanned_at,'') as scanned_at
 		FROM items i
@@ -494,11 +704,17 @@ func (a *App) adminPage(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var it ItemRow
-			if err := rows.Scan(&it.ID, &it.Barcode, &it.Name, &it.ScannedBy, &it.ScannedAt); err == nil {
-				// Derive category from name e.g. "Disc Dhol Dandiya - A001" or barcode prefix
+			var passNo string
+			if err := rows.Scan(&it.ID, &it.Barcode, &passNo, &it.Name, &it.ScannedBy, &it.ScannedAt); err == nil {
+				// Derive category letter using these sources in priority order:
+				//   1. First letter of pass_no  (e.g. "A001" → "A", "K001" → "K")
+				//   2. Letter after last " - " in name  (e.g. "... - A001" → "A")
+				//   3. First letter of barcode (legacy fallback)
 				cat := ""
-				if len(it.Name) > 0 {
-					// look for " - X" pattern at end of name
+				if len(passNo) > 0 {
+					cat = string(passNo[0])
+				}
+				if cat == "" && len(it.Name) > 0 {
 					for i := len(it.Name) - 1; i >= 0; i-- {
 						if it.Name[i] == '-' && i+2 < len(it.Name) {
 							cat = string(it.Name[i+2])
@@ -614,6 +830,8 @@ func (a *App) uploadItems(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	replaceAll := r.FormValue("replace_all") == "1"
+
 	items, err := parseItemsCSV(file)
 	if err != nil {
 		adminError(w, r, err.Error())
@@ -627,8 +845,25 @@ func (a *App) uploadItems(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Add only — never delete existing items or scans
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO items(barcode,name,description) VALUES(?,?,?)`)
+	if replaceAll {
+		// Delete all scans first (FK constraint), then all items.
+		if _, err := tx.Exec(`DELETE FROM scans`); err != nil {
+			adminError(w, r, "Could not clear scan marks")
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM items`); err != nil {
+			adminError(w, r, "Could not clear item list")
+			return
+		}
+	}
+
+	insertSQL := `INSERT OR IGNORE INTO items(barcode,pass_no,name,description) VALUES(?,?,?,?)`
+	if replaceAll {
+		// After a full clear there are no duplicates possible; use plain INSERT.
+		insertSQL = `INSERT INTO items(barcode,pass_no,name,description) VALUES(?,?,?,?)`
+	}
+
+	stmt, err := tx.Prepare(insertSQL)
 	if err != nil {
 		adminError(w, r, "Database error")
 		return
@@ -637,13 +872,13 @@ func (a *App) uploadItems(w http.ResponseWriter, r *http.Request) {
 
 	added, skipped := 0, 0
 	for _, it := range items {
-		res, err := stmt.Exec(it.Barcode, it.Name, it.Description)
+		res, err := stmt.Exec(it.Barcode, it.PassNo, it.Name, it.Description)
 		if err != nil {
 			adminError(w, r, "Database error on barcode: "+it.Barcode)
 			return
 		}
-		rows, _ := res.RowsAffected()
-		if rows == 0 {
+		n, _ := res.RowsAffected()
+		if n == 0 {
 			skipped++
 		} else {
 			added++
@@ -653,11 +888,16 @@ func (a *App) uploadItems(w http.ResponseWriter, r *http.Request) {
 		adminError(w, r, "Could not save item list")
 		return
 	}
-	adminMessage(w, r, fmt.Sprintf("Added %d items, skipped %d duplicates", added, skipped))
+	if replaceAll {
+		adminMessage(w, r, fmt.Sprintf("Replaced item list: %d items imported", added))
+	} else {
+		adminMessage(w, r, fmt.Sprintf("Added %d items, skipped %d duplicates", added, skipped))
+	}
 }
 
 type itemCSV struct {
 	Barcode     string
+	PassNo      string
 	Name        string
 	Description string
 }
@@ -677,13 +917,48 @@ func parseItemsCSV(file multipart.File) ([]itemCSV, error) {
 	if !ok {
 		return nil, errors.New("CSV must have a barcode column")
 	}
-	nameIdx, ok := idx["name"]
-	if !ok {
-		return nil, errors.New("CSV must have a name column")
+	// Accept several column name aliases for pass_no so that CSVs with
+	// headers like "adult_ticket", "kid_ticket", "ticket_no", or even
+	// "name" (when the name column contains pass numbers like A001, A500)
+	// are handled correctly.
+	passNoCol := ""
+	for _, alias := range []string{"pass_no", "adult_ticket", "kid_ticket", "ticket_no", "pass"} {
+		if _, ok := idx[alias]; ok {
+			passNoCol = alias
+			break
+		}
+	}
+	// Special case: CSV has only "name" + "barcode" columns and the "name"
+	// column contains pass identifiers (e.g. A001, A1001).  Treat "name" as
+	// pass_no so duplicate barcodes with different pass numbers are allowed.
+	if passNoCol == "" {
+		if _, hasName := idx["name"]; hasName {
+			if _, hasBarcode := idx["barcode"]; hasBarcode {
+				// Only treat name-as-pass_no when there is no other descriptive
+				// column (description, title, etc.).  This catches the
+				// "name,barcode" two-column format used for ticket lists.
+				_, hasDesc2 := idx["description"]
+				_, hasTitle := idx["title"]
+				if !hasDesc2 && !hasTitle {
+					passNoCol = "name"
+				}
+			}
+		}
+	}
+	passNoIdx, hasPassNo := idx[passNoCol], passNoCol != ""
+
+	// If passNoCol == "name" we will use pass_no as both pass_no and name below.
+	nameIdx, hasName := idx["name"]
+	_ = hasName // used below
+	if passNoCol != "name" && !hasName && passNoCol == "" {
+		return nil, errors.New("CSV must have a name column (and optionally a pass_no/adult_ticket column)")
 	}
 	descIdx, hasDesc := idx["description"]
 
-	seen := map[string]bool{}
+	// When pass_no column is present, uniqueness is (pass_no, barcode).
+	// When absent, uniqueness is barcode alone (legacy behaviour).
+	type dedupeKey struct{ passNo, barcode string }
+	seen := map[dedupeKey]bool{}
 	var items []itemCSV
 	rowNum := 1
 	for {
@@ -695,23 +970,48 @@ func parseItemsCSV(file multipart.File) ([]itemCSV, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid CSV row %d", rowNum)
 		}
-		if barcodeIdx >= len(row) || nameIdx >= len(row) {
-			return nil, fmt.Errorf("missing columns on row %d", rowNum)
+		if barcodeIdx >= len(row) {
+			return nil, fmt.Errorf("missing barcode column on row %d", rowNum)
+		}
+		if hasName && nameIdx >= len(row) {
+			return nil, fmt.Errorf("missing name column on row %d", rowNum)
 		}
 		barcode := normalizeBarcode(row[barcodeIdx])
-		name := strings.TrimSpace(row[nameIdx])
-		if barcode == "" || name == "" {
-			return nil, fmt.Errorf("barcode and name are required on row %d", rowNum)
+		if barcode == "" {
+			return nil, fmt.Errorf("empty barcode on row %d", rowNum)
 		}
-		if seen[barcode] {
+		passNo := ""
+		if hasPassNo && passNoIdx < len(row) {
+			passNo = strings.TrimSpace(row[passNoIdx])
+		}
+		// Name: use the name column if present and it isn't already serving as
+		// pass_no, otherwise fall back to pass_no itself.
+		name := ""
+		if passNoCol == "name" {
+			// "name" column holds pass identifiers — use it for both fields.
+			name = passNo
+		} else if hasName && nameIdx < len(row) {
+			name = strings.TrimSpace(row[nameIdx])
+		}
+		if name == "" && passNo != "" {
+			name = passNo
+		}
+		if name == "" {
+			return nil, fmt.Errorf("cannot determine name for row %d (no name or pass_no column)", rowNum)
+		}
+		key := dedupeKey{passNo: passNo, barcode: barcode}
+		if seen[key] {
+			if passNo != "" {
+				return nil, fmt.Errorf("duplicate pass_no+barcode combination %q/%q on row %d", passNo, barcode, rowNum)
+			}
 			return nil, fmt.Errorf("duplicate barcode %q on row %d", barcode, rowNum)
 		}
-		seen[barcode] = true
+		seen[key] = true
 		desc := ""
 		if hasDesc && descIdx < len(row) {
 			desc = strings.TrimSpace(row[descIdx])
 		}
-		items = append(items, itemCSV{Barcode: barcode, Name: name, Description: desc})
+		items = append(items, itemCSV{Barcode: barcode, PassNo: passNo, Name: name, Description: desc})
 	}
 	if len(items) == 0 {
 		return nil, errors.New("CSV contains no items")
@@ -775,12 +1075,14 @@ func (a *App) clearScans(w http.ResponseWriter, r *http.Request) {
 		_, err = a.db.Exec(`DELETE FROM scans`)
 		msg = "All scan marks cleared"
 	} else {
-		// Item names are like "Disc Dhol Dandiya - S001", "Disc Dhol Dandiya - A001"
-		// Match: name contains " - S" / " - A" / " - K"
+		// Match by pass_no prefix first (e.g. pass_no LIKE 'A%' for Adult),
+		// then fall back to name pattern for legacy data.
 		_, err = a.db.Exec(`
 			DELETE FROM scans WHERE item_id IN (
-				SELECT id FROM items WHERE name LIKE ?
-			)`, "% - "+category+"%")
+				SELECT id FROM items
+				WHERE pass_no LIKE ?
+				   OR (pass_no = '' AND name LIKE ?)
+			)`, category+"%", "% - "+category+"%")
 		msg = "Scan marks cleared for category: " + category
 	}
 	if err != nil {

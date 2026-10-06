@@ -98,7 +98,200 @@ function initApp() {
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
-  // ── API call ────────────────────────────────────────────
+  // ── Pass selection UI ───────────────────────────────────
+  // Shown when OCR fails and multiple passes share a barcode.
+
+  function showPassSelection(barcode, matches) {
+    // Pause camera scanning while selection is shown to prevent re-trigger.
+    pauseCameraScanning();
+
+    // Hide the normal result card.
+    const resultCard = document.getElementById('result');
+    resultCard.style.display = 'none';
+
+    // Build or reuse the selection panel.
+    let panel = document.getElementById('passSelectionPanel');
+    if (!panel) {
+      panel = document.createElement('section');
+      panel.id = 'passSelectionPanel';
+      panel.className = 'pass-selection-panel';
+      // Insert it right after the result card in the DOM.
+      resultCard.parentNode.insertBefore(panel, resultCard.nextSibling);
+    }
+
+    // Check if ALL passes are already scanned.
+    const allScanned = matches.every(m => m.scanned);
+
+    // Build the header.
+    let html = `
+      <div class="psp-header">
+        <div class="psp-barcode-label">Barcode detected</div>
+        <div class="psp-barcode-value">${esc(barcode)}</div>
+        <div class="psp-ocr-notice">⚠️ Pass No could not be detected via OCR</div>
+      </div>`;
+
+    if (allScanned) {
+      html += `<div class="psp-all-scanned">ALL MATCHING PASSES ALREADY SCANNED</div>`;
+    } else {
+      html += `<div class="psp-subtitle">Multiple tickets use this barcode. Select the correct pass:</div>`;
+    }
+
+    // Unscanned passes first (already sorted by server), then scanned ones.
+    matches.forEach((m, idx) => {
+      const scanned = m.scanned;
+      const cardClass = scanned ? 'pass-card pass-card--scanned' : 'pass-card';
+      const statusBadge = scanned
+        ? `<span class="pass-status-badge pass-status-badge--used">ALREADY SCANNED</span>`
+        : `<span class="pass-status-badge pass-status-badge--ok">NOT SCANNED</span>`;
+      const scanMeta = scanned && m.scanned_by
+        ? `<div class="pass-scan-meta">Scanned by ${esc(m.scanned_by)}${m.scanned_at ? ' at ' + formatTime(m.scanned_at) : ''}</div>`
+        : '';
+      const btn = scanned
+        ? `<button type="button" class="pass-select-btn pass-select-btn--used" disabled>ALREADY USED</button>`
+        : `<button type="button" class="pass-select-btn" data-idx="${idx}">SELECT</button>`;
+
+      html += `
+        <div class="${cardClass}">
+          <div class="pass-card-top">
+            <div class="pass-info">
+              <div class="pass-no">${esc(m.pass_no || '(no pass no)')}</div>
+              <div class="pass-name">${esc(m.name)}</div>
+            </div>
+            ${statusBadge}
+          </div>
+          ${scanMeta}
+          <div class="pass-card-bottom">${btn}</div>
+        </div>`;
+    });
+
+    html += `<button type="button" class="psp-cancel-btn" id="pspCancel">✕ Cancel — scan again</button>`;
+    panel.innerHTML = html;
+    panel.style.display = 'block';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Wire SELECT buttons.
+    panel.querySelectorAll('.pass-select-btn[data-idx]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const match = matches[parseInt(btn.dataset.idx, 10)];
+        closePassSelection();
+        submitWithPassNo(barcode, match.pass_no);
+      });
+    });
+
+    // Wire cancel.
+    document.getElementById('pspCancel').addEventListener('click', () => {
+      closePassSelection();
+      resumeCameraScanning();
+      // Reset debounce so the same barcode can be scanned again.
+      lastValue = '';
+    });
+  }
+
+  function closePassSelection() {
+    const panel = document.getElementById('passSelectionPanel');
+    if (panel) panel.style.display = 'none';
+  }
+
+  // ── Camera scanning pause/resume (used during pass selection) ──
+
+  let cameraPaused = false;
+
+  function pauseCameraScanning() {
+    cameraPaused = true;
+  }
+
+  function resumeCameraScanning() {
+    cameraPaused = false;
+  }
+
+  // ── Submit a confirmed barcode + pass_no to /api/scan ───
+
+  async function submitWithPassNo(barcode, passNo) {
+    showResult('pending', '⏳', 'Checking…', barcode, passNo ? `Pass: ${passNo}` : '');
+    try {
+      const res  = await fetch('/api/scan', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body:    JSON.stringify({ barcode, pass_no: passNo }),
+      });
+      const data = await res.json();
+      handleScanResponse(data, barcode);
+    } catch (e) {
+      showResult('error', '⚠️', 'Network Error', '', 'Could not reach the server.');
+    }
+  }
+
+  // ── Handle a /api/scan response ─────────────────────────
+
+  function handleScanResponse(data, barcode) {
+    if (data.status === 'success') {
+      const label = data.pass_no ? `${data.item} — ${data.pass_no}` : data.item;
+      showResult('valid', '✅', 'Valid — Entry Allowed', label, data.message);
+      todayScans++;
+      todayCount.textContent = todayScans;
+      if (badge) badge.textContent = todayScans;
+      playSound('valid');
+      if (navigator.vibrate) navigator.vibrate(80);
+      resumeCameraScanning();
+
+    } else if (data.status === 'duplicate') {
+      const label = data.pass_no ? `${data.item} — ${data.pass_no}` : data.item;
+      showResult('used', '⚠️', 'Already Checked In', label, data.message);
+      playSound('used');
+      if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+      resumeCameraScanning();
+
+    } else if (data.status === 'not_found') {
+      showResult('invalid', '❌', 'Invalid Barcode', '', 'This barcode is not registered.');
+      playSound('invalid');
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 100]);
+      resumeCameraScanning();
+
+    } else if (data.status === 'mismatch') {
+      showResult('invalid', '❌', 'Pass / Barcode Mismatch', '', data.message || 'No record matches this combination.');
+      playSound('invalid');
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 100]);
+      resumeCameraScanning();
+
+    } else if (data.status === 'needs_selection') {
+      // Server says: multiple passes share this barcode — fetch the list and show UI.
+      fetchAndShowPassSelection(barcode);
+
+    } else {
+      showResult('error', '⚠️', 'Error', '', data.message || 'Request failed');
+      playSound('invalid');
+      resumeCameraScanning();
+    }
+  }
+
+  // ── Fetch pass list and show selection UI ───────────────
+
+  async function fetchAndShowPassSelection(barcode) {
+    showResult('pending', '⏳', 'Multiple passes found…', barcode, 'Please select the correct pass below.');
+    try {
+      const res  = await fetch('/api/scan/lookup', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body:    JSON.stringify({ barcode }),
+      });
+      const data = await res.json();
+      if (data.status === 'ok' && Array.isArray(data.matches) && data.matches.length > 0) {
+        showPassSelection(barcode, data.matches);
+      } else {
+        showResult('invalid', '❌', 'Invalid Barcode', '', 'This barcode is not registered.');
+        playSound('invalid');
+        resumeCameraScanning();
+      }
+    } catch (e) {
+      showResult('error', '⚠️', 'Network Error', '', 'Could not reach the server.');
+      resumeCameraScanning();
+    }
+  }
+
+  // ── Primary API call ────────────────────────────────────
+  // Triggered by camera scan or manual entry.
+  // pass_no is intentionally omitted here — it comes from OCR (future) or
+  // from the selection UI callback above.
 
   async function checkBarcode(value) {
     value = value.trim();
@@ -111,6 +304,10 @@ function initApp() {
     lastValue = value;
     lastAt    = now;
 
+    // Close any open selection panel before starting a new scan.
+    closePassSelection();
+    resumeCameraScanning();
+
     showResult('pending', '⏳', 'Checking…', value, '');
     try {
       const res  = await fetch('/api/scan', {
@@ -119,26 +316,7 @@ function initApp() {
         body:    JSON.stringify({ barcode: value }),
       });
       const data = await res.json();
-
-      if (data.status === 'success') {
-        showResult('valid', '✅', 'Valid — Entry Allowed', data.item, data.message);
-        todayScans++;
-        todayCount.textContent = todayScans;
-        if (badge) badge.textContent = todayScans;
-        playSound('valid');
-        if (navigator.vibrate) navigator.vibrate(80);
-      } else if (data.status === 'duplicate') {
-        showResult('used', '⚠️', 'Already Checked In', data.item, data.message);
-        playSound('used');
-        if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
-      } else if (data.status === 'not_found') {
-        showResult('invalid', '❌', 'Invalid Barcode', '', 'This barcode is not registered.');
-        playSound('invalid');
-        if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 100]);
-      } else {
-        showResult('error', '⚠️', 'Error', '', data.message || 'Request failed');
-        playSound('invalid');
-      }
+      handleScanResponse(data, value);
     } catch (e) {
       showResult('error', '⚠️', 'Network Error', '', 'Could not reach the server.');
     }
@@ -259,7 +437,12 @@ function initApp() {
       await scanner.start(
         camId,
         { fps: 15, qrbox: { width: 280, height: 160 }, aspectRatio: 1.333 },
-        (decodedText) => { checkBarcode(decodedText); },
+        (decodedText) => {
+          // While operator is choosing a pass, ignore new camera reads.
+          if (!cameraPaused) {
+            checkBarcode(decodedText);
+          }
+        },
         (_err) => {}
       );
     } catch (e) {
@@ -281,6 +464,7 @@ function initApp() {
       scanner  = null;
       scanning = false;
     }
+    cameraPaused = false;
     if (scanLine)  scanLine.classList.remove('active');
     if (videoHint) videoHint.textContent = 'Point barcode at the frame';
     startBtn.disabled = false;

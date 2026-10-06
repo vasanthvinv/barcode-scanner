@@ -504,3 +504,245 @@ video, #video {
   .corner.bl { bottom: 20%; left: 18%; }
   .corner.br { bottom: 20%; right: 18%; }
 }
+
+/* ═══════════════════════════════════════════════════════ */
+/* PASS SELECTION PANEL                                    */
+/* Shown when OCR fails and multiple passes share a        */
+/* barcode — operator must pick the correct one.           */
+/* ═══════════════════════════════════════════════════════ */
+
+.pass-selection-panel {
+  background: #fff;
+  border: 2px solid #6366f1;
+  border-radius: 16px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+  animation: popIn .2s ease-out;
+}
+
+/* ── Header ───────────────────────────────────────────── */
+.psp-header {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+}
+.psp-barcode-label {
+  font-size: .8rem;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.psp-barcode-value {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #111;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+}
+.psp-ocr-notice {
+  font-size: .85rem;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: .4rem .75rem;
+  margin-top: .25rem;
+}
+.psp-subtitle {
+  font-size: .9rem;
+  color: #374151;
+  font-weight: 600;
+}
+
+/* ── All-scanned notice ───────────────────────────────── */
+.psp-all-scanned {
+  text-align: center;
+  font-weight: 800;
+  font-size: 1rem;
+  color: #c0392b;
+  background: #fee2e2;
+  border: 1.5px solid #ef4444;
+  border-radius: 10px;
+  padding: .85rem 1rem;
+}
+
+/* ── Individual pass cards ────────────────────────────── */
+.pass-card {
+  border: 1.5px solid #e0e0e0;
+  border-radius: 12px;
+  padding: .9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+  background: #fafafa;
+  transition: border-color .15s;
+}
+.pass-card:not(.pass-card--scanned):hover {
+  border-color: #6366f1;
+  background: #f5f3ff;
+}
+.pass-card--scanned {
+  background: #f9fafb;
+  opacity: .75;
+}
+
+.pass-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: .75rem;
+}
+.pass-info {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+}
+.pass-no {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #111;
+  letter-spacing: .02em;
+}
+.pass-name {
+  font-size: .88rem;
+  color: #555;
+}
+
+/* ── Status badges ────────────────────────────────────── */
+.pass-status-badge {
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: .25rem .65rem;
+  border-radius: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.pass-status-badge--ok {
+  background: #dcfce7;
+  color: #166534;
+}
+.pass-status-badge--used {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ── Scan meta (who/when it was scanned) ──────────────── */
+.pass-scan-meta {
+  font-size: .8rem;
+  color: #6b7280;
+  background: #fee2e2;
+  border-radius: 6px;
+  padding: .3rem .6rem;
+}
+
+/* ── Select / Already-used buttons ───────────────────── */
+.pass-card-bottom {
+  display: flex;
+  justify-content: flex-end;
+}
+.pass-select-btn {
+  padding: .6rem 1.5rem;
+  border-radius: 9px;
+  font-size: .9rem;
+  font-weight: 700;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: background .15s;
+}
+.pass-select-btn:hover:not(:disabled) {
+  background: #4f46e5;
+}
+.pass-select-btn--used {
+  background: #e5e7eb;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+.pass-select-btn:disabled {
+  cursor: not-allowed;
+}
+
+/* ── Cancel button ────────────────────────────────────── */
+.psp-cancel-btn {
+  background: none;
+  border: 1.5px solid #d1d5db;
+  color: #6b7280;
+  font-size: .85rem;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: .6rem 1rem;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color .15s, color .15s;
+}
+.psp-cancel-btn:hover {
+  border-color: #111;
+  color: #111;
+  background: none;
+}
+
+/* ── Replace-all upload checkbox ─────────────────────────── */
+.replace-label {
+  display: flex;
+  align-items: flex-start;
+  gap: .6rem;
+  font-weight: normal;
+  cursor: pointer;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 8px;
+  padding: .65rem .85rem;
+  font-size: .9rem;
+  margin-top: .25rem;
+}
+.replace-label input[type=checkbox] {
+  flex-shrink: 0;
+  margin-top: .15rem;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  border: 1.5px solid #bbb;
+  border-radius: 3px;
+  accent-color: #c0392b;
+}
+
+/* ── Admin items search box ──────────────────────────────── */
+.list-header-controls {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  align-items: flex-end;
+}
+.item-search-input {
+  width: 260px;
+  padding: .45rem .85rem;
+  border: 1.5px solid #ccc;
+  border-radius: 20px;
+  font-size: .9rem;
+  background: #fff;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.item-search-input:focus {
+  border-color: #111;
+  box-shadow: 0 0 0 3px rgba(0,0,0,.07);
+}
+.item-search-input::placeholder { color: #aaa; }
+
+.search-hint {
+  font-size: .82rem;
+  color: #6b7280;
+  padding: .35rem .1rem;
+  font-style: italic;
+}
+
+@media (max-width: 640px) {
+  .list-header-controls { align-items: flex-start; }
+  .item-search-input { width: 100%; }
+}
